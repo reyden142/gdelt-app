@@ -1,0 +1,34 @@
+{
+    "name": "gdelt-app",
+    "version": "1.0.0",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js"
+    },
+    "dependencies": {
+        "axios": "^1.11.0",
+        "cheerio": "^1.1.2",
+        "dotenv": "^16.3.1",
+        "express": "^4.21.2",
+        "fast-csv": "^4.3.6",
+        "ioredis": "^5.3.2",
+        "lodash": "^4.17.21",
+        "mongoose": "^7.3.1",
+        "node-cron": "^3.0.2",
+        "unzipper": "^0.10.11",
+        "winston": "^3.8.2"
+    },
+    "description": "",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/reyden142/gdelt-app.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "bugs": {
+        "url": "https://github.com/reyden142/gdelt-app/issues"
+    },
+    "homepage": "https://github.com/reyden142/gdelt-app#readme"
+}
