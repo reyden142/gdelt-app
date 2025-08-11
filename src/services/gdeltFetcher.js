@@ -120,7 +120,14 @@ async function fetchAndProcess(date, options = {}) {
         logger.info(`Parsed 15-min file ${fifteenName}. Themes: ${collector.themes.length}, Persons: ${collector.persons.length}, Orgs: ${collector.orgs.length}, Docs: ${collector.documentIdentifiers.length}`);
         const ranked = rankCollector(collector);
         logger.info(`Ranked -> T:${ranked.themes.length} P:${ranked.persons.length} O:${ranked.orgs.length}`);
-        await saveTrends({ date, timestamp, jobType: options.jobType || 'realtime', ...ranked, documentIdentifiers: collector.documentIdentifiers });
+        const dailyDateStr = d.toISOString().slice(0, 10);
+        await saveTrends({
+            date: dailyDateStr,
+            timestamp: dailyDate,
+            jobType: 'daily',
+            ...ranked,
+            documentIdentifiers: collector.documentIdentifiers
+        });
         return true;
     } catch (err) {
         const status = err.response && err.response.status;
@@ -176,11 +183,21 @@ async function saveTrends({ date, timestamp, jobType, themes, persons, orgs, doc
                 { $set: { keywords: trendData.keywords, timestamp: trendData.timestamp } },
                 { upsert: true, new: true }
             );
+
             logger.info(`Saved/Updated ${trendData.type} ${trendData.category} trends for ${trendData.date}`);
+
+            // DEBUG: Fetch back immediately and log count to verify save
+            const savedDoc = await Trend.findOne({ type: trendData.type, date: trendData.date, category: trendData.category }).lean();
+            if (savedDoc) {
+                logger.debug(`Verified saved ${trendData.category} keywords count: ${savedDoc.keywords?.length || 0}`);
+            } else {
+                logger.warn(`Failed to verify saved ${trendData.category} trends for ${trendData.date}`);
+            }
         } else {
             logger.info(`No keywords for ${trendData.type} ${trendData.category} on ${trendData.date}`);
         }
     }
 }
+
 
 module.exports = { fetchAndProcess, getFilenameForUTC, getDailyFilenameForUTC };

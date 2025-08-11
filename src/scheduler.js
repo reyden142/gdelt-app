@@ -9,7 +9,11 @@ const unzipper = require('unzipper');
 const winston = require('winston');
 const csv = require('fast-csv'); // Re-adding fast-csv
 
-const logger = winston.createLogger({ transports: [new winston.transports.Console()] });
+const logger = winston.createLogger({
+    level: 'info',
+    transports: [new winston.transports.Console()],
+});
+
 
 function startSchedules() {
     // Real-time schedule: every N minutes (*/N * * * *)
@@ -92,6 +96,7 @@ function startSchedules() {
                 } catch (err) {
                     // skip missing file quietly
                     logger.warn(`Daily fetch skip ${url} - ${err.message}`);
+                    logger.error('Daily job error:', err);
                 }
             } // end for
             // now aggregate daily

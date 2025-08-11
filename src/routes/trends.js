@@ -160,7 +160,7 @@ router.get('/top', async (req, res) => {
     }
 });
 
-// GET /trends/documents?date=YYYY-MM-DD
+// GET /trends/documents
 router.get('/documents', async (req, res) => {
     logger.info(`Received /documents request. Query: ${JSON.stringify(req.query)}`);
     try {
@@ -170,7 +170,7 @@ router.get('/documents', async (req, res) => {
             Trend.findOne({ type: 'daily', date, category: 'documents' }).lean().exec()
         );
 
-        const documentIdentifiers = get(doc, 'keywords', []).map(k => k.word);
+        const documentIdentifiers = (doc && doc.keywords) ? doc.keywords.map(k => k.word) : [];
         logger.info(`Sending /documents response. Date: ${date}, Results count: ${documentIdentifiers.length}`);
         return res.json({ date, results: documentIdentifiers });
     } catch (err) {
