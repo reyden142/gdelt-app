@@ -7,20 +7,9 @@ const winston = require('winston');
 
 const logger = winston.createLogger({ transports: [new winston.transports.Console()] });
 
-/**
- * parseCsvStream - accepts a readable stream of the CSV file content (unzipped)
- * opts:
- *   - category: 'all' | 'themes' | 'persons' | 'orgs'
- *   - timestamp: Date (JS Date object) - the time this file represents
- */
 async function parseCsvStream(stream, opts = {}) {
     const category = opts.category || 'all';
     const timestamp = opts.timestamp || new Date();
-    const themesIdx = config.columnIndices.themes;
-    const personsIdx = config.columnIndices.persons;
-    const orgsIdx = config.columnIndices.orgs;
-    const locationsIdx = config.columnIndices.locations;
-    // We'll attempt to detect header on first row
     let headerDetected = false;
     let header = null;
     let rowCount = 0;
@@ -30,10 +19,11 @@ async function parseCsvStream(stream, opts = {}) {
         themes: [],
         persons: [],
         orgs: [],
+        documentIdentifiers: [],
     };
 
     return new Promise((resolve, reject) => {
-        const parserStream = csv.parse({ headers: false, relax_quotes: true, skipLines: 0 })
+        const parserStream = csv.parse({ headers: false, relax_quotes: true, skipLines: 0, delimiter: '\t' })
             .on('error', error => {
                 logger.error('CSV parse error: ' + error.message);
                 reject(error);
@@ -41,68 +31,71 @@ async function parseCsvStream(stream, opts = {}) {
             .on('data', row => {
                 rowCount++;
                 try {
-                    // row is array-like (fast-csv returns array when headers:false)
-                    // On first row, try to detect header by checking for V2Themes etc
                     if (!headerDetected && rowCount === 1) {
                         const rowStr = row.join('|').toLowerCase();
-                        if (rowStr.includes('v2themes') || rowStr.includes('v2persons') || rowStr.includes('v2organizations')) {
+                        if (rowStr.includes('v2themes') || rowStr.includes('v2persons') || rowStr.includes('v2organizations') || rowStr.includes('documentidentifier')) {
                             headerDetected = true;
                             header = row.map(c => String(c).toLowerCase());
-                            // map indices
-                            if (!config.columnIndices.themes) {
-                                const i = header.findIndex(h => h.includes('v2themes'));
-                                if (i >= 0) config.columnIndices.themes = i;
-                            }
-                            if (!config.columnIndices.persons) {
-                                const i = header.findIndex(h => h.includes('v2persons'));
-                                if (i >= 0) config.columnIndices.persons = i;
-                            }
-                            if (!config.columnIndices.orgs) {
-                                const i = header.findIndex(h => h.includes('v2organizations'));
-                                if (i >= 0) config.columnIndices.orgs = i;
-                            }
-                            // header row -> skip processing as data
-                            return;
-                        } else {
-                            headerDetected = false;
+                            const themesIdx = header.findIndex(h => h.includes('v2themes'));
+                            if (themesIdx >= 0) config.columnIndices.themes = themesIdx;
+                            const personsIdx = header.findIndex(h => h.includes('v2persons'));
+                            if (personsIdx >= 0) config.columnIndices.persons = personsIdx;
+                            const orgsIdx = header.findIndex(h => h.includes('v2organizations'));
+                            if (orgsIdx >= 0) config.columnIndices.orgs = orgsIdx;
+                            const docIdIdx = header.findIndex(h => h.includes('documentidentifier'));
+                            if (docIdIdx >= 0) config.columnIndices.documentIdentifier = docIdIdx;
+                            return; // skip header row
                         }
                     }
 
-                    // helper to safely get col
                     const getCol = (idx) => {
                         if (idx === null || idx === undefined) return null;
                         return row[idx] !== undefined ? row[idx] : null;
                     };
 
+                    // Get document IDs for this row, split by '|' if multiple
+                    const rawDocId = getCol(config.columnIndices.documentIdentifier);
+                    const docIds = rawDocId ? rawDocId.split('|').filter(id => id.trim() !== '') : [];
+
+                    // Helper to build keyword objects with documents attached
+                    const buildKeywordObjs = (raw) => {
+                        return splitAndClean(raw).map(word => ({
+                            word,
+                            count: 1,
+                            documents: docIds,
+                        }));
+                    };
+
                     if (category === 'all' || category === 'themes') {
                         const rawThemes = getCol(config.columnIndices.themes);
                         if (rawThemes) {
-                            const parts = splitAndClean(rawThemes);
-                            collector.themes.push(...parts);
+                            collector.themes.push(...buildKeywordObjs(rawThemes));
                         }
                     }
                     if (category === 'all' || category === 'persons') {
                         const rawPersons = getCol(config.columnIndices.persons);
                         if (rawPersons) {
-                            const parts = splitAndClean(rawPersons);
-                            collector.persons.push(...parts);
+                            collector.persons.push(...buildKeywordObjs(rawPersons));
                         }
                     }
                     if (category === 'all' || category === 'orgs') {
                         const rawOrgs = getCol(config.columnIndices.orgs);
                         if (rawOrgs) {
-                            const parts = splitAndClean(rawOrgs);
-                            collector.orgs.push(...parts);
+                            collector.orgs.push(...buildKeywordObjs(rawOrgs));
                         }
                     }
+
+                    // Collect document identifiers separately too (raw string)
+                    if (rawDocId) {
+                        collector.documentIdentifiers.push(...docIds);
+                    }
+
                 } catch (err) {
-                    // non-fatal per-row errors should be logged and not stop the stream
                     logger.warn('Row parse warning: ' + err.message);
                 }
             })
             .on('end', async (rowCount) => {
                 logger.info(`CSV parse completed — rows: ${rowCount}`);
-                // pass collected tokens to aggregator which will rank and persist
                 try {
                     await aggregator.aggregateFromFile({ collector, timestamp, category });
                     resolve(true);

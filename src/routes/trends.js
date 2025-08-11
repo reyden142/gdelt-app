@@ -6,6 +6,7 @@ const IORedis = require('ioredis');
 const redis = new IORedis(config.redis);
 const router = express.Router();
 const winston = require('winston');
+const { get } = require('lodash');
 
 const logger = winston.createLogger({ transports: [new winston.transports.Console()] });
 
@@ -25,9 +26,7 @@ async function getCachedOrDb(key, dbQuery) {
 function parseWindowDays(input) {
     if (!input) return 7;
     const raw = String(input).trim().toLowerCase();
-    // Accept numeric days directly
     if (/^\d+$/.test(raw)) return Math.max(1, parseInt(raw, 10));
-    // Accept forms like 7d, 30d
     const m = raw.match(/^(\d+)\s*([dmy])$/);
     if (m) {
         const n = parseInt(m[1], 10);
@@ -36,7 +35,6 @@ function parseWindowDays(input) {
         if (unit === 'm') return Math.max(1, n * 30);
         if (unit === 'y') return Math.max(1, n * 365);
     }
-    // Named presets
     const presets = {
         '7d': 7,
         '30d': 30,
@@ -48,39 +46,50 @@ function parseWindowDays(input) {
     return 7;
 }
 
-// GET /trends/realtime?date=YYYY-MM-DD&category=themes|persons|orgs
+// GET /trends/realtime?date=YYYY-MM-DD&category=themes|persons|orgs|documents|all
 router.get('/realtime', async (req, res) => {
     logger.info(`Received /realtime request. Query: ${JSON.stringify(req.query)}`);
     try {
         const date = req.query.date || new Date().toISOString().slice(0, 10);
         const category = req.query.category || 'all';
         const key = `realtime:${date}:${category}`;
-        const doc = await getCachedOrDb(key, () => Trend.find({ type: 'realtime', date, category: category === 'all' ? { $in: ['themes', 'persons', 'orgs'] } : category }).sort({ timestamp: -1 }).limit(20).lean().exec());
-        logger.info(`Sending /realtime response. Date: ${date}, Category: ${category}, Results count: ${doc ? doc.length : 0}`);
-        return res.json({ date, category, results: doc });
+        const queryCategory = category === 'all' ? { $in: ['themes', 'persons', 'orgs', 'documents'] } : category;
+
+        const docs = await getCachedOrDb(key, () =>
+            Trend.find({ type: 'realtime', date, category: queryCategory })
+                .sort({ timestamp: -1 })
+                .limit(20)
+                .lean()
+                .exec()
+        );
+
+        logger.info(`Sending /realtime response. Date: ${date}, Category: ${category}, Results count: ${docs ? docs.length : 0}`);
+        return res.json({ date, category, results: docs });
     } catch (err) {
         logger.error(`Error in /realtime: ${err.message}`);
         return res.status(500).json({ error: err.message });
     }
 });
 
-// GET /trends/daily?date=YYYY-MM-DD&category=themes|persons|orgs
+// GET /trends/daily?date=YYYY-MM-DD&category=themes|persons|orgs|documents|all
 router.get('/daily', async (req, res) => {
     logger.info(`Received /daily request. Query: ${JSON.stringify(req.query)}`);
     try {
         const date = req.query.date || new Date().toISOString().slice(0, 10);
         const category = req.query.category || 'all';
         const key = `daily:${date}:${category}`;
-        const doc = await getCachedOrDb(key, () => {
+
+        const docs = await getCachedOrDb(key, () => {
             if (category === 'all') {
                 return Trend.find({ type: 'daily', date }).lean().exec();
             } else {
                 return Trend.findOne({ type: 'daily', date, category }).lean().exec();
             }
         });
-        const categories = Array.isArray(doc) ? doc.map(d => d.category) : (doc ? [doc.category] : []);
-        logger.info(`Sending /daily response. Date: ${date}, Category: ${category}, Results: ${doc ? (Array.isArray(doc) ? doc.length : 1) : 0}, Categories present: ${categories.join(',')}`);
-        return res.json({ date, category, results: doc });
+
+        const categories = Array.isArray(docs) ? docs.map(d => d.category) : (docs ? [docs.category] : []);
+        logger.info(`Sending /daily response. Date: ${date}, Category: ${category}, Results: ${docs ? (Array.isArray(docs) ? docs.length : 1) : 0}, Categories present: ${categories.join(',')}`);
+        return res.json({ date, category, results: docs });
     } catch (err) {
         logger.error(`Error in /daily: ${err.message}`);
         return res.status(500).json({ error: err.message });
@@ -97,12 +106,13 @@ router.post('/admin/fetchDaily', async (req, res) => {
         const d = new Date(`${dateStr}T12:00:00.000Z`);
         logger.info(`Admin: manual daily fetch for ${dateStr}`);
         const ok = await fetchAndProcess(d, { category: 'all', timestamp: d, jobType: 'daily' });
-        // Clear caches for this date so fresh query returns updated data
+
         await Promise.all([
             redis.del(`daily:${dateStr}:all`),
             redis.del(`daily:${dateStr}:themes`),
             redis.del(`daily:${dateStr}:persons`),
             redis.del(`daily:${dateStr}:orgs`),
+            redis.del(`daily:${dateStr}:documents`),
         ]);
         return res.json({ ok });
     } catch (err) {
@@ -111,8 +121,7 @@ router.post('/admin/fetchDaily', async (req, res) => {
     }
 });
 
-// GET /trends/top?date=YYYY-MM-DD&category=themes|persons|orgs&window=7|30|3m|1y|3y&limit=50
-// GET /trends/top?date=YYYY-MM-DD&category=themes|persons|orgs&window=7|30|3m|1y|3y&limit=50
+// GET /trends/top?date=YYYY-MM-DD&category=themes|persons|orgs|documents&window=7|30|3m|1y|3y&limit=50
 router.get('/top', async (req, res) => {
     logger.info(`Received /top request. Query: ${JSON.stringify(req.query)}`);
     try {
@@ -151,5 +160,23 @@ router.get('/top', async (req, res) => {
     }
 });
 
+// GET /trends/documents?date=YYYY-MM-DD
+router.get('/documents', async (req, res) => {
+    logger.info(`Received /documents request. Query: ${JSON.stringify(req.query)}`);
+    try {
+        const date = req.query.date || new Date().toISOString().slice(0, 10);
+        const key = `documents:${date}`;
+        const doc = await getCachedOrDb(key, () =>
+            Trend.findOne({ type: 'daily', date, category: 'documents' }).lean().exec()
+        );
+
+        const documentIdentifiers = get(doc, 'keywords', []).map(k => k.word);
+        logger.info(`Sending /documents response. Date: ${date}, Results count: ${documentIdentifiers.length}`);
+        return res.json({ date, results: documentIdentifiers });
+    } catch (err) {
+        logger.error(`Error in /documents: ${err.message}`);
+        return res.status(500).json({ error: err.message });
+    }
+});
 
 module.exports = router;

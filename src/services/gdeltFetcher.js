@@ -28,10 +28,11 @@ function getDailyFilenameForUTC(date) {
 }
 
 async function parseCsvStreamToCollector(stream) {
-    const collector = { themes: [], persons: [], orgs: [] };
+    const collector = { themes: [], persons: [], orgs: [], documentIdentifiers: [] };
     let headerDetected = false;
+    let rowCount = 0;
 
-    // Set sane defaults if not provided (common GKG v2 ordering)
+    // Set sane defaults if not provided
     if (config.columnIndices.themes === null || config.columnIndices.themes === undefined) {
         config.columnIndices.themes = 7; // V2Themes
     }
@@ -41,16 +42,21 @@ async function parseCsvStreamToCollector(stream) {
     if (config.columnIndices.orgs === null || config.columnIndices.orgs === undefined) {
         config.columnIndices.orgs = 10; // V2Organizations
     }
-    logger.info(`Using column indices -> themes:${config.columnIndices.themes}, persons:${config.columnIndices.persons}, orgs:${config.columnIndices.orgs}`);
+    // Add default index for DocumentIdentifier
+    if (config.columnIndices.documentIdentifier === null || config.columnIndices.documentIdentifier === undefined) {
+        config.columnIndices.documentIdentifier = 4; // DocumentIdentifier
+    }
+    logger.info(`Using column indices -> themes:${config.columnIndices.themes}, persons:${config.columnIndices.persons}, orgs:${config.columnIndices.orgs}, docId:${config.columnIndices.documentIdentifier}`);
 
     return new Promise((resolve, reject) => {
         const parserStream = csv.parse({ headers: false, relax_quotes: true, trim: true, delimiter: '\t' })
             .on('error', err => reject(err))
             .on('data', row => {
+                rowCount++;
                 try {
                     if (!headerDetected) {
                         const rowStr = row.join('|').toLowerCase();
-                        if (rowStr.includes('v2themes') || rowStr.includes('v2persons') || rowStr.includes('v2organizations')) {
+                        if (rowStr.includes('v2themes') || rowStr.includes('v2persons') || rowStr.includes('v2organizations') || rowStr.includes('documentidentifier')) {
                             headerDetected = true;
                             const header = row.map(c => String(c).toLowerCase());
                             const th = header.findIndex(h => h.includes('v2themes'));
@@ -59,7 +65,9 @@ async function parseCsvStreamToCollector(stream) {
                             if (pe >= 0) config.columnIndices.persons = pe;
                             const or = header.findIndex(h => h.includes('v2organizations'));
                             if (or >= 0) config.columnIndices.orgs = or;
-                            logger.info(`Header detected, updated indices -> themes:${config.columnIndices.themes}, persons:${config.columnIndices.persons}, orgs:${config.columnIndices.orgs}`);
+                            const di = header.findIndex(h => h.includes('documentidentifier'));
+                            if (di >= 0) config.columnIndices.documentIdentifier = di;
+                            logger.info(`Header detected, updated indices -> themes:${config.columnIndices.themes}, persons:${config.columnIndices.persons}, orgs:${config.columnIndices.orgs}, docId:${config.columnIndices.documentIdentifier}`);
                             return; // skip header
                         }
                     }
@@ -70,11 +78,16 @@ async function parseCsvStreamToCollector(stream) {
                     if (rawPersons) collector.persons.push(...splitAndClean(rawPersons));
                     const rawOrgs = getCol(config.columnIndices.orgs);
                     if (rawOrgs) collector.orgs.push(...splitAndClean(rawOrgs));
+                    const documentIdentifier = getCol(config.columnIndices.documentIdentifier);
+                    if (documentIdentifier) collector.documentIdentifiers.push(documentIdentifier);
                 } catch (e) {
-                    // continue on row errors
+                    logger.warn(`Row parse error on row ${rowCount}: ${e.message}`);
                 }
             })
-            .on('end', () => resolve(collector));
+            .on('end', () => {
+                logger.info(`CSV parse completed. Rows: ${rowCount}. Collected themes: ${collector.themes.length}, persons: ${collector.persons.length}, orgs: ${collector.orgs.length}, documentIdentifiers: ${collector.documentIdentifiers.length}`);
+                resolve(collector);
+            });
         stream.pipe(parserStream);
     });
 }
@@ -104,9 +117,10 @@ async function fetchAndProcess(date, options = {}) {
 
     try {
         const collector = await downloadAndParse(fifteenUrl);
+        logger.info(`Parsed 15-min file ${fifteenName}. Themes: ${collector.themes.length}, Persons: ${collector.persons.length}, Orgs: ${collector.orgs.length}, Docs: ${collector.documentIdentifiers.length}`);
         const ranked = rankCollector(collector);
-        logger.info(`Parsed 15-min file ${fifteenName}. Themes: ${collector.themes.length}, Persons: ${collector.persons.length}, Orgs: ${collector.orgs.length}. Ranked -> T:${ranked.themes.length} P:${ranked.persons.length} O:${ranked.orgs.length}`);
-        await saveTrends({ date, timestamp, jobType: options.jobType || 'realtime', ...ranked });
+        logger.info(`Ranked -> T:${ranked.themes.length} P:${ranked.persons.length} O:${ranked.orgs.length}`);
+        await saveTrends({ date, timestamp, jobType: options.jobType || 'realtime', ...ranked, documentIdentifiers: collector.documentIdentifiers });
         return true;
     } catch (err) {
         const status = err.response && err.response.status;
@@ -120,10 +134,11 @@ async function fetchAndProcess(date, options = {}) {
         const dailyUrl = `${config.gdeltDailyBaseUrl}/${dailyName}`;
         try {
             const collector = await downloadAndParse(dailyUrl);
+            logger.info(`Parsed daily file ${dailyName}. Themes: ${collector.themes.length}, Persons: ${collector.persons.length}, Orgs: ${collector.orgs.length}, Docs: ${collector.documentIdentifiers.length}`);
             const ranked = rankCollector(collector);
-            logger.info(`Parsed daily file ${dailyName}. Themes: ${collector.themes.length}, Persons: ${collector.persons.length}, Orgs: ${collector.orgs.length}. Ranked -> T:${ranked.themes.length} P:${ranked.persons.length} O:${ranked.orgs.length}`);
+            logger.info(`Ranked -> T:${ranked.themes.length} P:${ranked.persons.length} O:${ranked.orgs.length}`);
             const dailyDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-            await saveTrends({ date: dailyDate, timestamp: dailyDate, jobType: 'daily', ...ranked });
+            await saveTrends({ date: dailyDate, timestamp: dailyDate, jobType: 'daily', ...ranked, documentIdentifiers: collector.documentIdentifiers });
             return true;
         } catch (err) {
             const status = err.response && err.response.status;
@@ -135,13 +150,24 @@ async function fetchAndProcess(date, options = {}) {
     return false;
 }
 
-async function saveTrends({ date, timestamp, jobType, themes, persons, orgs }) {
+async function saveTrends({ date, timestamp, jobType, themes, persons, orgs, documentIdentifiers = [] }) {
     const isoDate = new Date(date).toISOString().slice(0, 10);
     const trends = [
         { type: jobType || 'realtime', date: isoDate, category: 'themes', keywords: themes, timestamp },
         { type: jobType || 'realtime', date: isoDate, category: 'persons', keywords: persons, timestamp },
         { type: jobType || 'realtime', date: isoDate, category: 'orgs', keywords: orgs, timestamp },
     ];
+
+    // Create and add a trend document for document identifiers
+    if (documentIdentifiers.length > 0) {
+        trends.push({
+            type: jobType || 'realtime',
+            date: isoDate,
+            category: 'documents',
+            keywords: documentIdentifiers.map(id => ({ word: id, count: 1 })),
+            timestamp
+        });
+    }
 
     for (const trendData of trends) {
         if (trendData.keywords && trendData.keywords.length > 0) {
