@@ -3,7 +3,8 @@
     "version": "1.0.0",
     "main": "src/index.js",
     "scripts": {
-        "start": "node src/index.js"
+        "start": "node src/index.js",
+        "dev": "nodemon src/index.js"
     },
     "dependencies": {
         "axios": "^1.11.0",
@@ -30,5 +31,8 @@
     "bugs": {
         "url": "https://github.com/reyden142/gdelt-app/issues"
     },
-    "homepage": "https://github.com/reyden142/gdelt-app#readme"
+    "homepage": "https://github.com/reyden142/gdelt-app#readme",
+    "devDependencies": {
+        "nodemon": "^3.1.10"
+    }
 }

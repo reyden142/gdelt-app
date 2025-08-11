@@ -10,6 +10,7 @@ const winston = require('winston');
 const logger = winston.createLogger({ transports: [new winston.transports.Console()] });
 
 const { fetchAndProcess } = require('../services/gdeltFetcher');
+const { scoreTrends } = require('../services/trendScorer');
 
 async function getCachedOrDb(key, dbQuery) {
     const cached = await redis.get(key);
@@ -19,6 +20,32 @@ async function getCachedOrDb(key, dbQuery) {
         await redis.set(key, JSON.stringify(doc), 'EX', 900);
     }
     return doc;
+}
+
+function parseWindowDays(input) {
+    if (!input) return 7;
+    const raw = String(input).trim().toLowerCase();
+    // Accept numeric days directly
+    if (/^\d+$/.test(raw)) return Math.max(1, parseInt(raw, 10));
+    // Accept forms like 7d, 30d
+    const m = raw.match(/^(\d+)\s*([dmy])$/);
+    if (m) {
+        const n = parseInt(m[1], 10);
+        const unit = m[2];
+        if (unit === 'd') return Math.max(1, n);
+        if (unit === 'm') return Math.max(1, n * 30);
+        if (unit === 'y') return Math.max(1, n * 365);
+    }
+    // Named presets
+    const presets = {
+        '7d': 7,
+        '30d': 30,
+        '3m': 90,
+        '1y': 365,
+        '3y': 365 * 3,
+    };
+    if (raw in presets) return presets[raw];
+    return 7;
 }
 
 // GET /trends/realtime?date=YYYY-MM-DD&category=themes|persons|orgs
@@ -83,5 +110,46 @@ router.post('/admin/fetchDaily', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+
+// GET /trends/top?date=YYYY-MM-DD&category=themes|persons|orgs&window=7|30|3m|1y|3y&limit=50
+// GET /trends/top?date=YYYY-MM-DD&category=themes|persons|orgs&window=7|30|3m|1y|3y&limit=50
+router.get('/top', async (req, res) => {
+    logger.info(`Received /top request. Query: ${JSON.stringify(req.query)}`);
+    try {
+        const date = req.query.date || new Date().toISOString().slice(0, 10);
+        const category = req.query.category || 'themes';
+        const windowParam = req.query.window || req.query.range || '7d';
+        const windowDays = parseWindowDays(windowParam);
+        const limit = parseInt(req.query.limit || '50', 10);
+        const noCache = req.query.nocache === '1';
+        const cacheKey = `top:${date}:${category}:${windowDays}:${limit}`;
+
+        if (!noCache) {
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                logger.debug(`[CACHE HIT] /top → key: ${cacheKey}`);
+                return res.json(JSON.parse(cached));
+            } else {
+                logger.debug(`[CACHE MISS] /top → key: ${cacheKey}`);
+            }
+        } else {
+            logger.debug(`[CACHE BYPASSED] /top → key: ${cacheKey}`);
+        }
+
+        const ranked = await scoreTrends({ date, category, windowDays, topN: limit });
+        const payload = { date, category, window: windowDays, results: ranked || [] };
+
+        if (!noCache) {
+            await redis.set(cacheKey, JSON.stringify(payload), 'EX', 600);
+            logger.debug(`[CACHE STORE] /top → key: ${cacheKey} stored for 600s`);
+        }
+
+        return res.json(payload);
+    } catch (err) {
+        logger.error(`Error in /top: ${err.message}`);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
 
 module.exports = router;
