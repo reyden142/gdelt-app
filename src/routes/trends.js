@@ -166,11 +166,15 @@ router.get('/documents', async (req, res) => {
     try {
         const date = req.query.date || new Date().toISOString().slice(0, 10);
         const key = `documents:${date}`;
+
+        // Get trend document for 'documents' category and date
         const doc = await getCachedOrDb(key, () =>
             Trend.findOne({ type: 'daily', date, category: 'documents' }).lean().exec()
         );
 
-        const documentIdentifiers = (doc && doc.keywords) ? doc.keywords.map(k => k.word) : [];
+        // Extract just the words from keywords array
+        const documentIdentifiers = (doc && doc.keywords) ? doc.keywords : [];
+
         logger.info(`Sending /documents response. Date: ${date}, Results count: ${documentIdentifiers.length}`);
         return res.json({ date, results: documentIdentifiers });
     } catch (err) {
@@ -178,5 +182,6 @@ router.get('/documents', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+
 
 module.exports = router;
